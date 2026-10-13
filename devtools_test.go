@@ -1,6 +1,8 @@
 package devtools
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -52,6 +54,18 @@ func (m *chainModel) Init() tea.Cmd { return nil }
 func (m *chainModel) Update(tea.Msg) (tea.Model, tea.Cmd) { return m, nil }
 
 func (m *chainModel) View() tea.View { return tea.NewView("chain") }
+
+// bigModel simula um modelo com muitos campos, como o medido na auditoria.
+type bigModel struct {
+	values [500]int
+	label  string
+}
+
+func (m *bigModel) Init() tea.Cmd { return nil }
+
+func (m *bigModel) Update(tea.Msg) (tea.Model, tea.Cmd) { return m, nil }
+
+func (m *bigModel) View() tea.View { return tea.NewView("big") }
 
 func TestMiddlewareNilNaoPanica(t *testing.T) {
 	var model tea.Model
@@ -151,5 +165,66 @@ func TestArvoreDeComponentesLimitaProfundidade(t *testing.T) {
 	}
 	if depth != maxComponentDepth {
 		t.Fatalf("profundidade %d, esperado %d", depth, maxComponentDepth)
+	}
+}
+
+// TestSnapshotNaoERecalculadoAMCadaMensagem garante que o snapshot de estado
+// nao seja recalculado a cada mensagem (custo de formatacao + reflexao).
+func TestSnapshotNaoERecalculadoAMCadaMensagem(t *testing.T) {
+	wrapped := Middleware(&simpleModel{}).(*wrappedModel)
+	antes := wrapped.state.refreshCount()
+
+	for i := 0; i < 100; i++ {
+		wrapped.Update(fmt.Sprintf("msg-%d", i))
+	}
+
+	depois := wrapped.state.refreshCount()
+	if maximo := 100/refreshInterval + 1; depois-antes > maximo {
+		t.Fatalf("snapshot recalculado %d vezes em 100 mensagens (maximo %d)", depois-antes, maximo)
+	}
+}
+
+// TestSnapshotAtualizadoSobDemanda garante que o estado continua atualizado
+// quando o painel do inspector esta visivel.
+func TestSnapshotAtualizadoSobDemanda(t *testing.T) {
+	wrapped := Middleware(&simpleModel{}).(*wrappedModel)
+
+	wrapped.Update("primeira")
+
+	if !strings.Contains(wrapped.state.CurrentState(), "count:0") {
+		t.Fatalf("o snapshot deveria permanecer throttled, veio %q", wrapped.state.CurrentState())
+	}
+
+	// Abre o painel: o estado passa a ser recalculado sob demanda.
+	wrapped.Update(tea.KeyPressMsg{Code: tea.KeyF12})
+	wrapped.View()
+
+	if !strings.Contains(wrapped.state.CurrentState(), "count:1") {
+		t.Fatalf("o estado deveria ter sido atualizado sob demanda, veio %q", wrapped.state.CurrentState())
+	}
+}
+
+// BenchmarkUpdateMensagens mede o custo do rastreamento de estado por
+// mensagem recebida (o snapshot e throttled).
+func BenchmarkUpdateMensagens(b *testing.B) {
+	wrapped := Middleware(&bigModel{}).(*wrappedModel)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		wrapped.Update(fmt.Sprintf("msg-%d", i))
+	}
+}
+
+// BenchmarkSnapshot mede o custo de um recalculo completo do snapshot
+// (formatacao do estado + arvore de componentes).
+func BenchmarkSnapshot(b *testing.B) {
+	state := &DevState{messages: make([]MessageEntry, maxMessages)}
+	model := &bigModel{}
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		state.snapshot(model)
 	}
 }

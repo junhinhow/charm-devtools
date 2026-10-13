@@ -18,6 +18,11 @@ const maxMessages = 100
 // component tree. It keeps deeply nested models from recursing forever.
 const maxComponentDepth = 16
 
+// refreshInterval is the number of messages that may pass before the state
+// snapshot is recalculated automatically. The snapshot is also refreshed on
+// demand, while the inspector panel is visible.
+const refreshInterval = 25
+
 // MessageEntry represents a single intercepted message with metadata.
 type MessageEntry struct {
 	Timestamp time.Time
@@ -44,6 +49,19 @@ type DevState struct {
 	count        int
 	currentState string
 	components   []ComponentNode
+
+	// model holds the last observed model and dirty tells whether the
+	// snapshot still has to be recalculated.
+	model tea.Model
+	dirty bool
+
+	// pending counts the messages received since the last automatic
+	// snapshot refresh.
+	pending int
+
+	// refreshes counts how many times the snapshot was recalculated. It is
+	// used to verify the throttling and by the tests.
+	refreshes int
 }
 
 // Messages returns a copy of the message history, oldest first.
@@ -104,18 +122,62 @@ func (ds *DevState) record(msg tea.Msg) {
 	}
 }
 
-func (ds *DevState) updateState(model tea.Model) {
+// observe stores the current model and schedules a snapshot refresh.
+//
+// The refresh is limited to one update every refreshInterval messages so
+// that tracking the state does not slow the application message loop down.
+func (ds *DevState) observe(model tea.Model) {
 	ds.mu.Lock()
-	defer ds.mu.Unlock()
-	ds.currentState = fmt.Sprintf("%+v", model)
+	ds.model = model
+	ds.dirty = true
+	ds.pending++
+	need := ds.pending >= refreshInterval
+	if need {
+		ds.pending = 0
+	}
+	ds.mu.Unlock()
+
+	if need {
+		ds.refresh()
+	}
 }
 
-func (ds *DevState) updateComponents(model tea.Model) {
-	ds.mu.Lock()
-	defer ds.mu.Unlock()
+// refresh recalculates the state snapshot and the component tree when there
+// are pending changes.
+func (ds *DevState) refresh() {
+	ds.mu.RLock()
+	model, dirty := ds.model, ds.dirty
+	ds.mu.RUnlock()
 
-	node := buildComponentNode(model)
-	ds.components = []ComponentNode{node}
+	if !dirty || model == nil {
+		return
+	}
+	ds.snapshot(model)
+}
+
+// snapshot recalculates and stores the state and the component tree.
+func (ds *DevState) snapshot(model tea.Model) {
+	state := "<nil>"
+	var components []ComponentNode
+	if model != nil {
+		state = fmt.Sprintf("%+v", model)
+		components = []ComponentNode{buildComponentNode(model)}
+	}
+
+	ds.mu.Lock()
+	ds.currentState = state
+	ds.components = components
+	ds.model = model
+	ds.dirty = false
+	ds.refreshes++
+	ds.mu.Unlock()
+}
+
+// refreshCount returns how many times the snapshot was recalculated.
+func (ds *DevState) refreshCount() int {
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+	return ds.refreshes
 }
 
 // buildComponentNode builds the component tree node for a model, walking
@@ -232,8 +294,7 @@ func Middleware(model tea.Model) tea.Model {
 	state := &DevState{
 		messages: make([]MessageEntry, maxMessages),
 	}
-	state.updateState(model)
-	state.updateComponents(model)
+	state.snapshot(model)
 
 	return &wrappedModel{
 		inner: model,
@@ -274,19 +335,22 @@ func (w *wrappedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Forward to the inner model.
 	newInner, cmd := w.inner.Update(msg)
-	w.inner = newInner
+	if newInner != nil {
+		w.inner = newInner
+	}
 
-	// Update tracked state after every message.
-	w.state.updateState(w.inner)
-	w.state.updateComponents(w.inner)
+	// The snapshot is refreshed on demand (while the panel is visible) or
+	// every refreshInterval messages, instead of on every message.
+	w.state.observe(w.inner)
 
 	return w, cmd
 }
 
 func (w *wrappedModel) View() tea.View {
 	if w.show {
-		// Update panel state before rendering.
-		w.panel.state = w.state
+		// Update panel state before rendering: with the panel visible the
+		// snapshot is refreshed on demand, so it always shows the newest state.
+		w.state.refresh()
 		return w.panel.View()
 	}
 	return w.inner.View()
