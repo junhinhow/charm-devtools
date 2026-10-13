@@ -14,6 +14,10 @@ import (
 // maxMessages defines the ring buffer capacity for message history.
 const maxMessages = 100
 
+// maxComponentDepth is the maximum depth explored while building the
+// component tree. It keeps deeply nested models from recursing forever.
+const maxComponentDepth = 16
+
 // MessageEntry represents a single intercepted message with metadata.
 type MessageEntry struct {
 	Timestamp time.Time
@@ -26,6 +30,10 @@ type ComponentNode struct {
 	Name     string
 	TypeName string
 	Children []ComponentNode
+
+	// Cycle is true when the node closes a reference cycle in the component
+	// tree. The recursion is cut at that point.
+	Cycle bool
 }
 
 // DevState holds the internal state tracked by the middleware.
@@ -110,8 +118,23 @@ func (ds *DevState) updateComponents(model tea.Model) {
 	ds.components = []ComponentNode{node}
 }
 
+// buildComponentNode builds the component tree node for a model, walking
+// recursively into the fields that are also tea.Model.
+//
+// The recursion is cut when an already visited pointer is found (a component
+// cycle) or when the maximum depth is reached.
 func buildComponentNode(model tea.Model) ComponentNode {
+	return buildComponentNodeDepth(model, 0, map[uintptr]bool{})
+}
+
+// buildComponentNodeDepth walks the component tree keeping track of the
+// visited pointers (cycle detection) and of the current depth.
+func buildComponentNodeDepth(model tea.Model, depth int, visited map[uintptr]bool) ComponentNode {
 	t := reflect.TypeOf(model)
+	if t == nil {
+		return ComponentNode{Name: "<nil>", TypeName: "<nil>"}
+	}
+
 	name := t.String()
 	if t.Kind() == reflect.Ptr {
 		name = t.Elem().String()
@@ -127,24 +150,64 @@ func buildComponentNode(model tea.Model) ComponentNode {
 		TypeName: t.String(),
 	}
 
+	if depth >= maxComponentDepth {
+		return node
+	}
+
 	// Inspect struct fields for nested tea.Model children.
 	v := reflect.ValueOf(model)
 	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return node
+		}
+		// An already visited pointer means that the model references itself
+		// (directly or indirectly): the node is flagged and the recursion
+		// stops, avoiding a stack overflow.
+		if ptr, ok := pointerOf(v); ok {
+			if visited[ptr] {
+				node.Cycle = true
+				return node
+			}
+			visited[ptr] = true
+			defer delete(visited, ptr)
+		}
 		v = v.Elem()
 	}
-	if v.Kind() == reflect.Struct {
-		for i := 0; i < v.NumField(); i++ {
-			field := v.Field(i)
-			if !field.CanInterface() {
-				continue
-			}
-			if child, ok := field.Interface().(tea.Model); ok {
-				node.Children = append(node.Children, buildComponentNode(child))
-			}
+
+	if v.Kind() != reflect.Struct {
+		return node
+	}
+
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		if !field.CanInterface() {
+			continue
 		}
+		child, ok := field.Interface().(tea.Model)
+		if !ok || child == nil {
+			continue
+		}
+		node.Children = append(node.Children, buildComponentNodeDepth(child, depth+1, visited))
 	}
 
 	return node
+}
+
+// pointerOf returns the address pointed by v when its kind allows it.
+//
+// reflect.Value.Pointer is only valid for a few kinds; calling it on any
+// other kind panics.
+func pointerOf(v reflect.Value) (uintptr, bool) {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func,
+		reflect.UnsafePointer, reflect.Chan:
+		if v.IsNil() {
+			return 0, false
+		}
+		return v.Pointer(), true
+	default:
+		return 0, false
+	}
 }
 
 // wrappedModel is the middleware model that intercepts all messages.
