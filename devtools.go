@@ -73,8 +73,18 @@ func (ds *DevState) record(msg tea.Msg) {
 
 	entry := MessageEntry{
 		Timestamp: time.Now(),
-		TypeName:  reflect.TypeOf(msg).String(),
-		Value:     fmt.Sprintf("%+v", msg),
+		TypeName:  "<nil>",
+		Value:     "<nil>",
+	}
+	// Uma mensagem nil não tem tipo: reflect.TypeOf(nil) devolve nil e
+	// chamaria String() em um valor inexistente.
+	if msg != nil {
+		entry.TypeName = reflect.TypeOf(msg).String()
+		entry.Value = fmt.Sprintf("%+v", msg)
+	}
+
+	if ds.messages == nil {
+		ds.messages = make([]MessageEntry, maxMessages)
 	}
 
 	if ds.count < maxMessages {
@@ -148,7 +158,14 @@ type wrappedModel struct {
 // Middleware wraps a tea.Model with DevTools instrumentation.
 // The returned model intercepts all messages and tracks state.
 // Press F12 to toggle the inspector panel overlay.
+//
+// A nil model is accepted: an inert model is used in its place so that the
+// application does not panic during initialization.
 func Middleware(model tea.Model) tea.Model {
+	if model == nil {
+		model = inertModel{}
+	}
+
 	state := &DevState{
 		messages: make([]MessageEntry, maxMessages),
 	}
@@ -211,3 +228,13 @@ func (w *wrappedModel) View() tea.View {
 	}
 	return w.inner.View()
 }
+
+// inertModel is an empty model used when Middleware receives nil. It keeps
+// the application alive instead of panicking during initialization.
+type inertModel struct{}
+
+func (inertModel) Init() tea.Cmd { return nil }
+
+func (m inertModel) Update(tea.Msg) (tea.Model, tea.Cmd) { return m, nil }
+
+func (inertModel) View() tea.View { return tea.NewView("") }
