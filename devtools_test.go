@@ -22,6 +22,31 @@ func (m *simpleModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *simpleModel) View() tea.View { return tea.NewView("simple") }
 
+// namedModel implementa Name() com um nome customizado.
+type namedModel struct {
+	simpleModel
+}
+
+func (m *namedModel) Name() string { return "Named" }
+
+// emptyNameModel implementa Name() devolvendo uma string vazia.
+type emptyNameModel struct {
+	simpleModel
+}
+
+func (m *emptyNameModel) Name() string { return "" }
+
+// parentModel possui um filho exportado, usado para inspecionar a arvore.
+type parentModel struct {
+	Child *simpleModel
+}
+
+func (m *parentModel) Init() tea.Cmd { return nil }
+
+func (m *parentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { return m, nil }
+
+func (m *parentModel) View() tea.View { return tea.NewView("parent") }
+
 // cycleA e cycleB se referenciam mutuamente, formando um ciclo de componentes.
 type cycleA struct {
 	B *cycleB
@@ -168,6 +193,58 @@ func TestArvoreDeComponentesLimitaProfundidade(t *testing.T) {
 	}
 }
 
+func TestNomeCustomizadoUsado(t *testing.T) {
+	node := buildComponentNode(&namedModel{})
+	if node.Name != "Named" {
+		t.Fatalf("nome inesperado: %q", node.Name)
+	}
+}
+
+func TestNomeCustomizadoVazioNaoSobrescreve(t *testing.T) {
+	node := buildComponentNode(&emptyNameModel{})
+	if node.Name == "" {
+		t.Fatal("Name() vazio nao pode sobrescrever o nome do no")
+	}
+	if !strings.Contains(node.Name, "emptyNameModel") {
+		t.Fatalf("nome inesperado: %q", node.Name)
+	}
+}
+
+func TestComponentsRetornaCopiaProfunda(t *testing.T) {
+	parent := &parentModel{Child: &simpleModel{}}
+	wrapped := Middleware(parent).(*wrappedModel)
+
+	comps := wrapped.state.Components()
+	if len(comps) != 1 || len(comps[0].Children) != 1 {
+		t.Fatalf("arvore inesperada: %+v", comps)
+	}
+
+	comps[0].Children[0].Name = "alterado"
+
+	novos := wrapped.state.Components()
+	if novos[0].Children[0].Name == "alterado" {
+		t.Fatal("Components() deve devolver uma copia profunda da arvore")
+	}
+}
+
+func TestBufferCircularMantemUltimasMensagens(t *testing.T) {
+	ds := &DevState{messages: make([]MessageEntry, maxMessages)}
+	for i := 0; i < maxMessages+50; i++ {
+		ds.record(fmt.Sprintf("msg-%03d", i))
+	}
+
+	messages := ds.Messages()
+	if len(messages) != maxMessages {
+		t.Fatalf("esperado %d mensagens, veio %d", maxMessages, len(messages))
+	}
+	if messages[0].Value != "msg-050" {
+		t.Fatalf("primeira mensagem inesperada: %q", messages[0].Value)
+	}
+	if messages[len(messages)-1].Value != "msg-149" {
+		t.Fatalf("ultima mensagem inesperada: %q", messages[len(messages)-1].Value)
+	}
+}
+
 // TestSnapshotNaoERecalculadoAMCadaMensagem garante que o snapshot de estado
 // nao seja recalculado a cada mensagem (custo de formatacao + reflexao).
 func TestSnapshotNaoERecalculadoAMCadaMensagem(t *testing.T) {
@@ -227,4 +304,25 @@ func BenchmarkSnapshot(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		state.snapshot(model)
 	}
+}
+
+func TestDevStateAcessivel(t *testing.T) {
+	wrapped := Middleware(&simpleModel{})
+
+	provider, ok := wrapped.(StateProvider)
+	if !ok {
+		t.Fatal("o modelo devolvido por Middleware deveria implementar StateProvider")
+	}
+	if provider.DevState() == nil {
+		t.Fatal("DevState() devolveu nil")
+	}
+}
+
+func ExampleMiddleware() {
+	wrapped := Middleware(&simpleModel{})
+	wrapped.Update("mensagem")
+
+	provider := wrapped.(StateProvider)
+	fmt.Println(len(provider.DevState().Messages()))
+	// Output: 1
 }

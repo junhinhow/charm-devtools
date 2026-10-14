@@ -85,12 +85,24 @@ func (ds *DevState) CurrentState() string {
 }
 
 // Components returns the current component tree snapshot.
+//
+// The returned tree is a deep copy: changing the nodes does not affect the
+// internal state.
 func (ds *DevState) Components() []ComponentNode {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
-	cp := make([]ComponentNode, len(ds.components))
-	copy(cp, ds.components)
-	return cp
+	return cloneNodes(ds.components)
+}
+
+// cloneNodes copies the component tree without sharing the children slices
+// with the internal state.
+func cloneNodes(nodes []ComponentNode) []ComponentNode {
+	clone := make([]ComponentNode, len(nodes))
+	for i, node := range nodes {
+		clone[i] = node
+		clone[i].Children = cloneNodes(node.Children)
+	}
+	return clone
 }
 
 func (ds *DevState) record(msg tea.Msg) {
@@ -203,8 +215,11 @@ func buildComponentNodeDepth(model tea.Model, depth int, visited map[uintptr]boo
 	}
 
 	// Check if the model implements a Name() method for custom naming.
+	// An empty name must not overwrite the name derived from the type.
 	if named, ok := model.(interface{ Name() string }); ok {
-		name = named.Name()
+		if custom := named.Name(); custom != "" {
+			name = custom
+		}
 	}
 
 	node := ComponentNode{
@@ -272,12 +287,25 @@ func pointerOf(v reflect.Value) (uintptr, bool) {
 	}
 }
 
+// StateProvider is implemented by the model returned by Middleware. It gives
+// programmatic access to the internal DevState.
+type StateProvider interface {
+	DevState() *DevState
+}
+
+// inspectorPanel is the interface of the inspector panel. Keeping it as an
+// interface avoids an unsafe type assertion on the panel returned by Update.
+type inspectorPanel interface {
+	Update(tea.Msg) (tea.Model, tea.Cmd)
+	View() tea.View
+}
+
 // wrappedModel is the middleware model that intercepts all messages.
 type wrappedModel struct {
 	inner tea.Model
 	state *DevState
 	show  bool
-	panel inspectorModel
+	panel inspectorPanel
 }
 
 // Middleware wraps a tea.Model with DevTools instrumentation.
@@ -304,6 +332,11 @@ func Middleware(model tea.Model) tea.Model {
 	}
 }
 
+// DevState returns the state tracker used by the middleware.
+func (w *wrappedModel) DevState() *DevState {
+	return w.state
+}
+
 func (w *wrappedModel) Init() tea.Cmd {
 	return w.inner.Init()
 }
@@ -327,7 +360,11 @@ func (w *wrappedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Code == tea.KeyUp, key.Code == tea.KeyDown,
 				key.Code == tea.KeyTab:
 				newPanel, cmd := w.panel.Update(msg)
-				w.panel = newPanel.(inspectorModel)
+				// The type assertion must be safe: a panel returning an
+				// unexpected model cannot bring the application down.
+				if panel, ok := newPanel.(inspectorPanel); ok {
+					w.panel = panel
+				}
 				return w, cmd
 			}
 		}

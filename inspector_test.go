@@ -156,6 +156,33 @@ func TestTruncatePreservaTextoCurto(t *testing.T) {
 	}
 }
 
+// fakePanel devolve um modelo que não implementa inspectorPanel.
+type fakePanel struct{}
+
+func (fakePanel) Update(tea.Msg) (tea.Model, tea.Cmd) { return nil, nil }
+
+func (fakePanel) View() tea.View { return tea.NewView("fake") }
+
+// TestPainelComModeloInesperadoNaoPanica garante que um painel que devolve um
+// modelo inesperado não derrube o aplicativo (asserção de tipo segura).
+func TestPainelComModeloInesperadoNaoPanica(t *testing.T) {
+	wrapped := Middleware(&simpleModel{}).(*wrappedModel)
+	wrapped.panel = fakePanel{}
+	wrapped.show = true
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("painel inesperado causou panic: %v", r)
+		}
+	}()
+
+	wrapped.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+
+	if _, ok := wrapped.panel.(fakePanel); !ok {
+		t.Fatal("o painel atual deveria ser mantido quando o novo modelo não serve")
+	}
+}
+
 func TestTrocaDeAbaZeraARolagem(t *testing.T) {
 	panel := newInspectorModel(newStateWithMessages(30))
 
