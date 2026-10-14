@@ -1,0 +1,12 @@
+# MantÃ©m os arquivos de texto com LF, inclusive no Windows: Ã© o que o gofmt
+# e as demais ferramentas do Go esperam (CRLF faz o gofmt reclamar de todos
+# os arquivos do repositÃ³rio).
+*.go   text eol=lf
+*.md   text eol=lf
+*.mod  text eol=lf
+*.sum  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.sh   text eol=lf
+*.ps1  text eol=lf crlf
