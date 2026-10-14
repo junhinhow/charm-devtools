@@ -11,17 +11,21 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// maxMessages defines the ring buffer capacity for message history.
-const maxMessages = 100
+const (
+	// maxMessages define a capacidade do buffer circular do log de mensagens.
+	maxMessages = 100
 
-// maxComponentDepth is the maximum depth explored while building the
-// component tree. It keeps deeply nested models from recursing forever.
-const maxComponentDepth = 16
+	// maxComponentDepth é a profundidade máxima percorrida ao montar a
+	// árvore de componentes. Ela impede que modelos profundamente aninhados
+	// (ou com referências circulares) gerem recursão sem fim.
+	maxComponentDepth = 16
 
-// refreshInterval is the number of messages that may pass before the state
-// snapshot is recalculated automatically. The snapshot is also refreshed on
-// demand, while the inspector panel is visible.
-const refreshInterval = 25
+	// refreshInterval é a quantidade de mensagens que pode passar entre duas
+	// atualizações automáticas do snapshot de estado/árvore de componentes.
+	// O snapshot também é recalculado sob demanda quando o painel do
+	// inspector está visível.
+	refreshInterval = 25
+)
 
 // MessageEntry represents a single intercepted message with metadata.
 type MessageEntry struct {
@@ -36,8 +40,8 @@ type ComponentNode struct {
 	TypeName string
 	Children []ComponentNode
 
-	// Cycle is true when the node closes a reference cycle in the component
-	// tree. The recursion is cut at that point.
+	// Cycle indica que o nó referencia um modelo já visitado na árvore
+	// (ciclo de componentes). A recursão é interrompida nesse ponto.
 	Cycle bool
 }
 
@@ -50,17 +54,17 @@ type DevState struct {
 	currentState string
 	components   []ComponentNode
 
-	// model holds the last observed model and dirty tells whether the
-	// snapshot still has to be recalculated.
+	// model guarda o último modelo observado pelo middleware e dirty indica
+	// que o snapshot ainda precisa ser recalculado.
 	model tea.Model
 	dirty bool
 
-	// pending counts the messages received since the last automatic
-	// snapshot refresh.
+	// pending conta as mensagens recebidas desde a última atualização
+	// automática do snapshot.
 	pending int
 
-	// refreshes counts how many times the snapshot was recalculated. It is
-	// used to verify the throttling and by the tests.
+	// refreshes conta quantas vezes o snapshot foi recalculado. É usado para
+	// verificar o efeito do throttling e em testes.
 	refreshes int
 }
 
@@ -78,6 +82,9 @@ func (ds *DevState) Messages() []MessageEntry {
 }
 
 // CurrentState returns the last captured model state string.
+//
+// O snapshot é atualizado de forma throttled (a cada refreshInterval
+// mensagens) e sob demanda, quando o painel do inspector está visível.
 func (ds *DevState) CurrentState() string {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
@@ -86,16 +93,16 @@ func (ds *DevState) CurrentState() string {
 
 // Components returns the current component tree snapshot.
 //
-// The returned tree is a deep copy: changing the nodes does not affect the
-// internal state.
+// A árvore devolvida é uma cópia profunda: alterar os nós retornados não
+// afeta o estado interno.
 func (ds *DevState) Components() []ComponentNode {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
 	return cloneNodes(ds.components)
 }
 
-// cloneNodes copies the component tree without sharing the children slices
-// with the internal state.
+// cloneNodes copia a árvore de componentes sem compartilhar as fatias de
+// filhos com o estado interno.
 func cloneNodes(nodes []ComponentNode) []ComponentNode {
 	clone := make([]ComponentNode, len(nodes))
 	for i, node := range nodes {
@@ -105,21 +112,21 @@ func cloneNodes(nodes []ComponentNode) []ComponentNode {
 	return clone
 }
 
+// record adiciona uma mensagem ao buffer circular. Mensagens nulas são
+// registradas com o marcador "<nil>" em vez de causar panic.
 func (ds *DevState) record(msg tea.Msg) {
-	ds.mu.Lock()
-	defer ds.mu.Unlock()
-
 	entry := MessageEntry{
 		Timestamp: time.Now(),
 		TypeName:  "<nil>",
 		Value:     "<nil>",
 	}
-	// Uma mensagem nil não tem tipo: reflect.TypeOf(nil) devolve nil e
-	// chamaria String() em um valor inexistente.
 	if msg != nil {
 		entry.TypeName = reflect.TypeOf(msg).String()
 		entry.Value = fmt.Sprintf("%+v", msg)
 	}
+
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
 
 	if ds.messages == nil {
 		ds.messages = make([]MessageEntry, maxMessages)
@@ -128,16 +135,16 @@ func (ds *DevState) record(msg tea.Msg) {
 	if ds.count < maxMessages {
 		ds.messages[ds.head+ds.count] = entry
 		ds.count++
-	} else {
-		ds.messages[ds.head] = entry
-		ds.head = (ds.head + 1) % maxMessages
+		return
 	}
+	ds.messages[ds.head] = entry
+	ds.head = (ds.head + 1) % maxMessages
 }
 
-// observe stores the current model and schedules a snapshot refresh.
+// observe registra o modelo atual e agenda o recálculo do snapshot.
 //
-// The refresh is limited to one update every refreshInterval messages so
-// that tracking the state does not slow the application message loop down.
+// O recálculo é limitado a uma atualização a cada refreshInterval mensagens
+// para não penalizar o laço de eventos do aplicativo.
 func (ds *DevState) observe(model tea.Model) {
 	ds.mu.Lock()
 	ds.model = model
@@ -154,8 +161,8 @@ func (ds *DevState) observe(model tea.Model) {
 	}
 }
 
-// refresh recalculates the state snapshot and the component tree when there
-// are pending changes.
+// refresh recalcula o snapshot de estado e a árvore de componentes quando há
+// mudanças pendentes.
 func (ds *DevState) refresh() {
 	ds.mu.RLock()
 	model, dirty := ds.model, ds.dirty
@@ -167,7 +174,7 @@ func (ds *DevState) refresh() {
 	ds.snapshot(model)
 }
 
-// snapshot recalculates and stores the state and the component tree.
+// snapshot recalcula e armazena o estado e a árvore de componentes do modelo.
 func (ds *DevState) snapshot(model tea.Model) {
 	state := "<nil>"
 	var components []ComponentNode
@@ -185,24 +192,24 @@ func (ds *DevState) snapshot(model tea.Model) {
 	ds.mu.Unlock()
 }
 
-// refreshCount returns how many times the snapshot was recalculated.
+// refreshCount devolve quantas vezes o snapshot foi recalculado.
 func (ds *DevState) refreshCount() int {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
 	return ds.refreshes
 }
 
-// buildComponentNode builds the component tree node for a model, walking
-// recursively into the fields that are also tea.Model.
+// buildComponentNode monta o nó da árvore de componentes para o modelo,
+// percorrendo recursivamente os campos que também são tea.Model.
 //
-// The recursion is cut when an already visited pointer is found (a component
-// cycle) or when the maximum depth is reached.
+// A recursão é interrompida quando um ponteiro já visitado é encontrado
+// (ciclo de componentes) ou quando a profundidade máxima é atingida.
 func buildComponentNode(model tea.Model) ComponentNode {
 	return buildComponentNodeDepth(model, 0, map[uintptr]bool{})
 }
 
-// buildComponentNodeDepth walks the component tree keeping track of the
-// visited pointers (cycle detection) and of the current depth.
+// buildComponentNodeDepth percorre a árvore de componentes com controle de
+// ciclos (visited) e de profundidade (depth).
 func buildComponentNodeDepth(model tea.Model, depth int, visited map[uintptr]bool) ComponentNode {
 	t := reflect.TypeOf(model)
 	if t == nil {
@@ -215,7 +222,7 @@ func buildComponentNodeDepth(model tea.Model, depth int, visited map[uintptr]boo
 	}
 
 	// Check if the model implements a Name() method for custom naming.
-	// An empty name must not overwrite the name derived from the type.
+	// Um nome vazio não pode sobrescrever o nome derivado do tipo.
 	if named, ok := model.(interface{ Name() string }); ok {
 		if custom := named.Name(); custom != "" {
 			name = custom
@@ -237,9 +244,8 @@ func buildComponentNodeDepth(model tea.Model, depth int, visited map[uintptr]boo
 		if v.IsNil() {
 			return node
 		}
-		// An already visited pointer means that the model references itself
-		// (directly or indirectly): the node is flagged and the recursion
-		// stops, avoiding a stack overflow.
+		// Um ponteiro já visitado indica que o modelo se referencia
+		// (diretamente ou indiretamente): o nó é marcado e a recursão para.
 		if ptr, ok := pointerOf(v); ok {
 			if visited[ptr] {
 				node.Cycle = true
@@ -270,10 +276,10 @@ func buildComponentNodeDepth(model tea.Model, depth int, visited map[uintptr]boo
 	return node
 }
 
-// pointerOf returns the address pointed by v when its kind allows it.
+// pointerOf devolve o endereço apontado por v quando o seu kind permite.
 //
-// reflect.Value.Pointer is only valid for a few kinds; calling it on any
-// other kind panics.
+// reflect.Value.Pointer só é válido para os kinds listados abaixo; chamá-lo
+// em outros kinds causa panic.
 func pointerOf(v reflect.Value) (uintptr, bool) {
 	switch v.Kind() {
 	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func,
@@ -287,14 +293,14 @@ func pointerOf(v reflect.Value) (uintptr, bool) {
 	}
 }
 
-// StateProvider is implemented by the model returned by Middleware. It gives
+// StateProvider is implemented by the model returned by Middleware. It allows
 // programmatic access to the internal DevState.
 type StateProvider interface {
 	DevState() *DevState
 }
 
 // inspectorPanel is the interface of the inspector panel. Keeping it as an
-// interface avoids an unsafe type assertion on the panel returned by Update.
+// interface avoids unsafe type assertions on the panel returned by Update.
 type inspectorPanel interface {
 	Update(tea.Msg) (tea.Model, tea.Cmd)
 	View() tea.View
@@ -356,12 +362,11 @@ func (w *wrappedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// If inspector is visible, let it handle navigation keys.
 	if w.show {
 		if key, ok := msg.(tea.KeyPressMsg); ok {
-			switch {
-			case key.Code == tea.KeyUp, key.Code == tea.KeyDown,
-				key.Code == tea.KeyTab:
+			switch key.Code {
+			case tea.KeyUp, tea.KeyDown, tea.KeyTab:
 				newPanel, cmd := w.panel.Update(msg)
-				// The type assertion must be safe: a panel returning an
-				// unexpected model cannot bring the application down.
+				// A asserção precisa ser segura: um painel que devolva um
+				// modelo inesperado não pode derrubar o aplicativo.
 				if panel, ok := newPanel.(inspectorPanel); ok {
 					w.panel = panel
 				}
@@ -376,7 +381,7 @@ func (w *wrappedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		w.inner = newInner
 	}
 
-	// The snapshot is refreshed on demand (while the panel is visible) or
+	// The snapshot is refreshed on demand (when the panel is visible) or
 	// every refreshInterval messages, instead of on every message.
 	w.state.observe(w.inner)
 

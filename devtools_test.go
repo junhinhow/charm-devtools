@@ -36,7 +36,7 @@ type emptyNameModel struct {
 
 func (m *emptyNameModel) Name() string { return "" }
 
-// parentModel possui um filho exportado, usado para inspecionar a arvore.
+// parentModel possui um filho exportado, usado para inspecionar a árvore.
 type parentModel struct {
 	Child *simpleModel
 }
@@ -68,8 +68,8 @@ func (m *cycleB) Update(tea.Msg) (tea.Model, tea.Cmd) { return m, nil }
 
 func (m *cycleB) View() tea.View { return tea.NewView("b") }
 
-// chainModel referencia a si mesmo e e usado para testar o limite de
-// profundidade da arvore de componentes.
+// chainModel referencia a si mesmo e é usado para testar o limite de
+// profundidade da árvore de componentes.
 type chainModel struct {
 	Next *chainModel
 }
@@ -137,8 +137,8 @@ func TestRecordNilNaoPanica(t *testing.T) {
 	}
 }
 
-// TestCicloDeComponentesNaoEstoura garante que modelos com referencias
-// circulares nao derrubem o aplicativo com "fatal error: stack overflow".
+// TestCicloDeComponentesNaoEstoura garante que modelos com referências
+// circulares não derrubem o aplicativo com "fatal error: stack overflow".
 func TestCicloDeComponentesNaoEstoura(t *testing.T) {
 	a := &cycleA{}
 	b := &cycleB{}
@@ -152,7 +152,7 @@ func TestCicloDeComponentesNaoEstoura(t *testing.T) {
 
 	comps := wrapped.(*wrappedModel).state.Components()
 	if len(comps) != 1 {
-		t.Fatalf("esperado 1 no raiz, veio %d", len(comps))
+		t.Fatalf("esperado 1 nó raiz, veio %d", len(comps))
 	}
 	root := comps[0]
 	if len(root.Children) != 1 {
@@ -164,10 +164,10 @@ func TestCicloDeComponentesNaoEstoura(t *testing.T) {
 	}
 	cycle := child.Children[0]
 	if !cycle.Cycle {
-		t.Fatal("o no que fecha o ciclo deveria estar marcado como ciclo")
+		t.Fatal("o nó que fecha o ciclo deveria estar marcado como ciclo")
 	}
 	if len(cycle.Children) != 0 {
-		t.Fatal("o no de ciclo nao deveria ter filhos")
+		t.Fatal("o nó de ciclo não deveria ter filhos")
 	}
 }
 
@@ -203,7 +203,7 @@ func TestNomeCustomizadoUsado(t *testing.T) {
 func TestNomeCustomizadoVazioNaoSobrescreve(t *testing.T) {
 	node := buildComponentNode(&emptyNameModel{})
 	if node.Name == "" {
-		t.Fatal("Name() vazio nao pode sobrescrever o nome do no")
+		t.Fatal("Name() vazio não pode sobrescrever o nome do nó")
 	}
 	if !strings.Contains(node.Name, "emptyNameModel") {
 		t.Fatalf("nome inesperado: %q", node.Name)
@@ -216,14 +216,14 @@ func TestComponentsRetornaCopiaProfunda(t *testing.T) {
 
 	comps := wrapped.state.Components()
 	if len(comps) != 1 || len(comps[0].Children) != 1 {
-		t.Fatalf("arvore inesperada: %+v", comps)
+		t.Fatalf("árvore inesperada: %+v", comps)
 	}
 
 	comps[0].Children[0].Name = "alterado"
 
 	novos := wrapped.state.Components()
 	if novos[0].Children[0].Name == "alterado" {
-		t.Fatal("Components() deve devolver uma copia profunda da arvore")
+		t.Fatal("Components() deve devolver uma cópia profunda da árvore")
 	}
 }
 
@@ -241,12 +241,12 @@ func TestBufferCircularMantemUltimasMensagens(t *testing.T) {
 		t.Fatalf("primeira mensagem inesperada: %q", messages[0].Value)
 	}
 	if messages[len(messages)-1].Value != "msg-149" {
-		t.Fatalf("ultima mensagem inesperada: %q", messages[len(messages)-1].Value)
+		t.Fatalf("última mensagem inesperada: %q", messages[len(messages)-1].Value)
 	}
 }
 
 // TestSnapshotNaoERecalculadoAMCadaMensagem garante que o snapshot de estado
-// nao seja recalculado a cada mensagem (custo de formatacao + reflexao).
+// não seja recalculado a cada mensagem (custo de formatação + reflexão).
 func TestSnapshotNaoERecalculadoAMCadaMensagem(t *testing.T) {
 	wrapped := Middleware(&simpleModel{}).(*wrappedModel)
 	antes := wrapped.state.refreshCount()
@@ -257,12 +257,12 @@ func TestSnapshotNaoERecalculadoAMCadaMensagem(t *testing.T) {
 
 	depois := wrapped.state.refreshCount()
 	if maximo := 100/refreshInterval + 1; depois-antes > maximo {
-		t.Fatalf("snapshot recalculado %d vezes em 100 mensagens (maximo %d)", depois-antes, maximo)
+		t.Fatalf("snapshot recalculado %d vezes em 100 mensagens (máximo %d)", depois-antes, maximo)
 	}
 }
 
 // TestSnapshotAtualizadoSobDemanda garante que o estado continua atualizado
-// quando o painel do inspector esta visivel.
+// quando o painel do inspector está visível.
 func TestSnapshotAtualizadoSobDemanda(t *testing.T) {
 	wrapped := Middleware(&simpleModel{}).(*wrappedModel)
 
@@ -278,31 +278,6 @@ func TestSnapshotAtualizadoSobDemanda(t *testing.T) {
 
 	if !strings.Contains(wrapped.state.CurrentState(), "count:1") {
 		t.Fatalf("o estado deveria ter sido atualizado sob demanda, veio %q", wrapped.state.CurrentState())
-	}
-}
-
-// BenchmarkUpdateMensagens mede o custo do rastreamento de estado por
-// mensagem recebida (o snapshot e throttled).
-func BenchmarkUpdateMensagens(b *testing.B) {
-	wrapped := Middleware(&bigModel{}).(*wrappedModel)
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		wrapped.Update(fmt.Sprintf("msg-%d", i))
-	}
-}
-
-// BenchmarkSnapshot mede o custo de um recalculo completo do snapshot
-// (formatacao do estado + arvore de componentes).
-func BenchmarkSnapshot(b *testing.B) {
-	state := &DevState{messages: make([]MessageEntry, maxMessages)}
-	model := &bigModel{}
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		state.snapshot(model)
 	}
 }
 
@@ -325,4 +300,29 @@ func ExampleMiddleware() {
 	provider := wrapped.(StateProvider)
 	fmt.Println(len(provider.DevState().Messages()))
 	// Output: 1
+}
+
+// BenchmarkUpdateMensagens mede o custo do rastreamento de estado por
+// mensagem recebida (o snapshot é throttled).
+func BenchmarkUpdateMensagens(b *testing.B) {
+	wrapped := Middleware(&bigModel{}).(*wrappedModel)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		wrapped.Update(fmt.Sprintf("msg-%d", i))
+	}
+}
+
+// BenchmarkSnapshot mede o custo de um recálculo completo do snapshot
+// (formatação do estado + árvore de componentes).
+func BenchmarkSnapshot(b *testing.B) {
+	state := &DevState{messages: make([]MessageEntry, maxMessages)}
+	model := &bigModel{}
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		state.snapshot(model)
+	}
 }
